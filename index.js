@@ -625,60 +625,35 @@ DropboxClient.prototype.searchPaperDocs = function(query, options) {
  * and merges numbered list content).
  */
 DropboxClient.prototype.createPaperDoc = function(docPath, content, importFormat) {
-  // Auto-convert markdown to HTML for better formatting preservation
   var actualContent = content;
   var actualFormat = importFormat || 'markdown';
   if (actualFormat === 'markdown') {
     actualContent = markdownToDropboxHtml(content);
     actualFormat = 'html';
   }
-  
-  var self = this;
-  function paperUpload(apiArg, body) {
-    // /files/paper/create lives on api.dropboxapi.com (not content host)
-    var url = self.apiUrl + '/files/paper/create';
-    var response = self.authenticatedRequest(url, {
-      method: 'POST',
-      headers: {
-        'Dropbox-API-Arg': JSON.stringify(apiArg),
-        'Content-Type': 'application/octet-stream'
-      },
-      body: body,
-      timeout: self.timeout
-    });
-    var text = response.text();
-    var data;
-    try { data = JSON.parse(text); } catch (e) { data = { error: text }; }
-    if (!response.ok) {
-      var err = new Error(data.error_summary || safeGet(data, 'error.message', null) || text || 'Upload failed');
-      err.status = response.status;
-      err.data = data;
-      throw err;
-    }
-    return data;
-  }
-  
+
+  // Use /files/upload on content.dropboxapi.com instead of the broken
+  // /files/paper/create on api.dropboxapi.com (which returns 500).
+  // The .paper extension in the path tells Dropbox to treat it as a Paper doc.
   try {
-    return paperUpload({
+    return this.uploadRequest('/files/upload', {
       path: docPath,
-      import_format: actualFormat
+      mode: 'add',
+      autorename: true,
+      mute: false
     }, actualContent);
   } catch (err) {
-    // If failed with invalid_file_extension, try create at root then move
     if (err.data && err.data.error && err.data.error['.tag'] === 'invalid_file_extension') {
-      // Extract filename from path
       var parts = docPath.split('/');
       var filename = parts[parts.length - 1];
       var tempPath = '/' + filename;
-      
-      // Create at root
-      var result = paperUpload({
+      var result = this.uploadRequest('/files/upload', {
         path: tempPath,
-        import_format: actualFormat
+        mode: 'add',
+        autorename: true,
+        mute: false
       }, actualContent);
-      
-      // Move to target location
-      var actualPath = result.result_path || tempPath;
+      var actualPath = result.path_display || tempPath;
       if (actualPath !== docPath) {
         var moveResult = this.request('/files/move_v2', {
           from_path: actualPath,
@@ -686,9 +661,8 @@ DropboxClient.prototype.createPaperDoc = function(docPath, content, importFormat
           allow_shared_folder: true,
           autorename: false
         });
-        result.result_path = moveResult.metadata.path_display;
+        result.path_display = moveResult.metadata.path_display;
       }
-      
       return result;
     }
     throw err;
@@ -703,51 +677,23 @@ DropboxClient.prototype.createPaperDoc = function(docPath, content, importFormat
  * the Dropbox Paper API's limited markdown parser.
  */
 DropboxClient.prototype.updatePaperDoc = function(docPath, content, importFormat, updatePolicy) {
-  // Auto-convert markdown to HTML for better formatting preservation
   var actualContent = content;
   var actualFormat = importFormat || 'markdown';
   if (actualFormat === 'markdown') {
     actualContent = markdownToDropboxHtml(content);
     actualFormat = 'html';
   }
-  
-  var apiArg = {
+
+  // Use /files/upload on content.dropboxapi.com instead of the broken
+  // /files/paper/update on api.dropboxapi.com (which returns 500).
+  // mode:'overwrite' replaces the content; mode:'add' would create a new revision.
+  var mode = (updatePolicy === 'overwrite' || !updatePolicy) ? 'overwrite' : 'add';
+  return this.uploadRequest('/files/upload', {
     path: docPath,
-    import_format: actualFormat,
-    doc_update_policy: updatePolicy || 'overwrite'
-  };
-  
-  // For 'update' (append) policy, we need the current paper_revision
-  if (updatePolicy === 'update') {
-    // Get current file info to get the paper revision
-    var info = this.getFileInfo(docPath);
-    // Paper docs return paper_revision in the metadata, but it's not always present
-    // The revision can be obtained from a prior paper create/update result
-    // For now, we'll just attempt without it and handle the error
-    // In practice, 'overwrite' is more commonly used
-  }
-  
-  // /files/paper/update lives on api.dropboxapi.com (not content host)
-  var url = this.apiUrl + '/files/paper/update';
-  var response = this.authenticatedRequest(url, {
-    method: 'POST',
-    headers: {
-      'Dropbox-API-Arg': JSON.stringify(apiArg),
-      'Content-Type': 'application/octet-stream'
-    },
-    body: actualContent,
-    timeout: this.timeout
-  });
-  var text = response.text();
-  var data;
-  try { data = JSON.parse(text); } catch (e) { data = { error: text }; }
-  if (!response.ok) {
-    var err = new Error(data.error_summary || safeGet(data, 'error.message', null) || text || 'Upload failed');
-    err.status = response.status;
-    err.data = data;
-    throw err;
-  }
-  return data;
+    mode: mode,
+    autorename: false,
+    mute: false
+  }, actualContent);
 };
 
 /**
