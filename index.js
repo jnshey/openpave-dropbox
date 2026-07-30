@@ -11,209 +11,14 @@ var fs = require('fs');
 var path = require('path');
 
 /**
- * Convert markdown to HTML suitable for Dropbox Paper API import.
- * 
- * The Dropbox Paper API's markdown parser is limited - it collapses
- * blank lines between paragraphs and merges numbered list content.
- * Converting to HTML with explicit <p> tags and &nbsp; spacers
- * preserves the intended formatting.
+ * JSON.stringify for the Dropbox-API-Arg header. HTTP headers must be ASCII,
+ * so every non-ASCII character (CJK paths etc.) is escaped as \\uXXXX per
+ * Dropbox's "HTTP header safe JSON" requirement.
  */
-function markdownToDropboxHtml(md) {
-  var lines = md.split('\n');
-  var html = [];
-  var inList = false;
-  var i = 0;
-  
-  while (i < lines.length) {
-    var line = lines[i];
-    var trimmed = line.replace(/^\s+/, '');
-    
-    // Empty line - add spacer paragraph
-    if (trimmed === '') {
-      // Don't add spacer at very beginning or end
-      if (html.length > 0 && i < lines.length - 1) {
-        html.push('<p>&nbsp;</p>');
-      }
-      i++;
-      continue;
-    }
-    
-    // Heading lines: # ## ### etc
-    var headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
-    if (headingMatch) {
-      var level = headingMatch[1].length;
-      html.push('<h' + level + '>' + escapeHtml(headingMatch[2]) + '</h' + level + '>');
-      i++;
-      continue;
-    }
-    
-    // Image: ![alt](url)
-    var imgMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-    if (imgMatch) {
-      html.push('<p><img src="' + escapeHtml(imgMatch[2]) + '" alt="' + escapeHtml(imgMatch[1]) + '" /></p>');
-      i++;
-      continue;
-    }
-    
-    // Horizontal rule: --- or ***  or ___
-    if (trimmed.match(/^[-*_]{3,}$/)) {
-      html.push('<hr />');
-      i++;
-      continue;
-    }
-
-    // Markdown table:
-    //   | h1 | h2 |
-    //   |----|----|
-    //   | a  | b  |
-    if (trimmed.charAt(0) === '|' && i + 1 < lines.length) {
-      var sepLine = lines[i + 1].replace(/^\s+/, '');
-      var sepRe = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
-      if (sepRe.test(sepLine)) {
-        var splitRow = function(row) {
-          var s = row.replace(/^\s*\|/, '').replace(/\|\s*$/, '');
-          return s.split('|').map(function(c) { return c.replace(/^\s+|\s+$/g, ''); });
-        };
-        var renderCell = function(text) {
-          var t = escapeHtml(text);
-          t = t.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-          t = t.replace(/\*([^*]+)\*/g, '<i>$1</i>');
-          t = t.replace(/__([^_]+)__/g, '<b>$1</b>');
-          t = t.replace(/_([^_]+)_/g, '<i>$1</i>');
-          return t;
-        };
-        var headers = splitRow(trimmed);
-        i += 2; // skip header + separator
-        var rows = [];
-        while (i < lines.length) {
-          var rowLine = lines[i].replace(/^\s+/, '');
-          if (rowLine.charAt(0) !== '|') break;
-          rows.push(splitRow(rowLine));
-          i++;
-        }
-        // Emit Dropbox Paper "native" editable table markup.
-        // Key structure (reverse-engineered from existing Paper docs):
-        //   <div style="width:100%;overflow:auto;">
-        //     <table style="width:100%;border-spacing:0;border:1px solid #c1c7cd;word-break:break-word;">
-        //       <tbody>
-        //         <tr>
-        //           <td style="...per-side border widths...">
-        //             <div dir="auto" style="line-height:26px;" class="ace-line "><span>cell</span></div>
-        //           </td>
-        //         </tr>
-        //       </tbody>
-        //     </table>
-        //   </div>
-        // Border rules: first row TD top=0; all TDs bottom=0, right=0; first col TD left=0, others left=1;
-        // non-first row TDs top=1.
-        var tdStyle = function(rowIdx, colIdx) {
-          var top = rowIdx === 0 ? 0 : 1;
-          var left = colIdx === 0 ? 0 : 1;
-          return 'border-color: #c1c7cd;border-style: solid;'
-            + 'border-top-width: ' + top + ';'
-            + 'border-bottom-width: 0;'
-            + 'border-right-width: 0;'
-            + 'border-left-width: ' + left + ';'
-            + 'min-width: 50px;min-height: 20px;padding: 5px 8px;'
-            + 'word-break: normal;vertical-align: top;';
-        };
-        var wrapCell = function(text) {
-          return '<div dir="auto" style="line-height: 26px;" class="ace-line "><span>'
-            + renderCell(text) + '</span></div>';
-        };
-        var allRows = [headers].concat(rows);
-        var tbl = ['<div style="width: 100%; overflow: auto;">'];
-        tbl.push('<table style="width: 100%;border-spacing: 0;border: 1px solid #c1c7cd;word-break: break-word;">');
-        tbl.push('<tbody>');
-        for (var rr = 0; rr < allRows.length; rr++) {
-          tbl.push('<tr>');
-          for (var cc = 0; cc < allRows[rr].length; cc++) {
-            // Bold the entire header row
-            var cellText = allRows[rr][cc];
-            if (rr === 0 && cellText.length > 0) cellText = '**' + cellText.replace(/\*\*/g, '') + '**';
-            tbl.push('<td style="' + tdStyle(rr, cc) + '">' + wrapCell(cellText) + '</td>');
-          }
-          tbl.push('</tr>');
-        }
-        tbl.push('</tbody></table></div>');
-        html.push(tbl.join(''));
-        continue;
-      }
-    }
-    
-    // Ordered list item: "1. Text" or "    1. Text" (sub-item)
-    var olMatch = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
-    if (olMatch) {
-      var indent = olMatch[1].length;
-      var text = olMatch[3];
-      // Main list items (no indent) - render as bold numbered paragraph
-      // Sub-list items (indented) - render with indent
-      if (indent >= 4) {
-        // Sub-item under a list item - indent with nbsp
-        var indentStr = '';
-        for (var s = 0; s < indent; s++) indentStr += '&nbsp;';
-        html.push('<p>' + indentStr + olMatch[2] + '. ' + escapeHtml(text) + '</p>');
-      } else {
-        html.push('<p>' + olMatch[2] + '. ' + escapeHtml(text) + '</p>');
-      }
-      i++;
-      continue;
-    }
-    
-    // Unordered list item: "- Text" or "* Text"
-    var ulMatch = line.match(/^(\s*)[-*]\s+(.*)$/);
-    if (ulMatch) {
-      var ulIndent = ulMatch[1].length;
-      var ulText = ulMatch[2];
-      var ulIndentStr = '';
-      for (var u = 0; u < ulIndent; u++) ulIndentStr += '&nbsp;';
-      html.push('<p>' + ulIndentStr + '- ' + escapeHtml(ulText) + '</p>');
-      i++;
-      continue;
-    }
-    
-    // Indented content (4+ spaces) - preserve indentation with nbsp
-    var indentedMatch = line.match(/^(\s{4,})(.*)$/);
-    if (indentedMatch) {
-      var spaces = indentedMatch[1].length;
-      var indentContent = indentedMatch[2];
-      var nbspIndent = '';
-      for (var n = 0; n < spaces; n++) nbspIndent += '&nbsp;';
-      html.push('<p>' + nbspIndent + escapeHtml(indentContent) + '</p>');
-      i++;
-      continue;
-    }
-    
-    // Bold text: **text**
-    // Regular paragraph
-    var paragraphText = escapeHtml(trimmed);
-    // Process inline formatting
-    paragraphText = paragraphText.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-    paragraphText = paragraphText.replace(/\*([^*]+)\*/g, '<i>$1</i>');
-    paragraphText = paragraphText.replace(/__([^_]+)__/g, '<b>$1</b>');
-    paragraphText = paragraphText.replace(/_([^_]+)_/g, '<i>$1</i>');
-    
-    // Preserve leading whitespace for non-indented but spaced lines
-    var leadingSpaces = line.match(/^(\s*)/)[1].length;
-    if (leadingSpaces > 0 && leadingSpaces < 4) {
-      var spaceStr = '';
-      for (var sp = 0; sp < leadingSpaces; sp++) spaceStr += '&nbsp;';
-      html.push('<p>' + spaceStr + paragraphText + '</p>');
-    } else {
-      html.push('<p>' + paragraphText + '</p>');
-    }
-    i++;
-  }
-  
-  return html.join('\n');
-}
-
-function escapeHtml(str) {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+function httpHeaderSafeJson(obj) {
+  return JSON.stringify(obj).replace(/[\u007f-\uffff]/g, function(c) {
+    return '\\u' + ('000' + c.charCodeAt(0).toString(16)).slice(-4);
+  });
 }
 
 /**
@@ -438,7 +243,7 @@ DropboxClient.prototype.uploadRequest = function(endpoint, apiArg, content) {
   var response = this.authenticatedRequest(url, {
     method: 'POST',
     headers: {
-      'Dropbox-API-Arg': JSON.stringify(apiArg),
+      'Dropbox-API-Arg': httpHeaderSafeJson(apiArg),
       'Content-Type': 'application/octet-stream'
     },
     body: content,
@@ -587,7 +392,7 @@ DropboxClient.prototype.getPaperDocContent = function(docPath, exportFormat, sav
   var options = {
     method: 'POST',
     headers: {
-      'Dropbox-API-Arg': JSON.stringify(apiArg),
+      'Dropbox-API-Arg': httpHeaderSafeJson(apiArg),
       'Content-Type': 'application/octet-stream'
     },
     timeout: this.timeout
@@ -617,83 +422,151 @@ DropboxClient.prototype.searchPaperDocs = function(query, options) {
 
 /**
  * Create a new Paper document
- * Note: Creating Paper docs in shared folders may fail with invalid_file_extension
- * In that case, we create at root and move to the target location
- * 
- * When import_format is 'markdown', we auto-convert to HTML to work around
- * the Dropbox Paper API's limited markdown parser (which collapses blank lines
- * and merges numbered list content).
+ * Uses the documented Paper import endpoint /2/files/paper/create (API
+ * domain), which parses markdown/html/plain_text into a real Paper document.
+ * Raw /files/upload of a .paper path creates an ordinary file the Paper web
+ * editor refuses to open ("This file type is unsupported here") — issue #3.
+ *
+ * Returns { url, result_path, file_id, paper_revision }.
  */
-DropboxClient.prototype.createPaperDoc = function(docPath, content, importFormat) {
-  var actualContent = content;
-  var actualFormat = importFormat || 'markdown';
-  if (actualFormat === 'markdown') {
-    actualContent = markdownToDropboxHtml(content);
-    actualFormat = 'html';
-  }
+/**
+ * The Paper API requires paths ending in lowercase ".paper" — uppercase
+ * variants get invalid_file_extension (verified live). Append or lowercase
+ * the extension as needed.
+ */
+function normalizePaperPath(docPath) {
+  if (/\.paper$/.test(docPath)) return docPath;
+  if (/\.paper$/i.test(docPath)) return docPath.replace(/\.paper$/i, '.paper');
+  return docPath + '.paper';
+}
 
-  // Use /files/upload on content.dropboxapi.com instead of the broken
-  // /files/paper/create on api.dropboxapi.com (which returns 500).
-  // The .paper extension in the path tells Dropbox to treat it as a Paper doc.
+DropboxClient.prototype.createPaperDoc = function(docPath, content, importFormat) {
+  return this.paperRequest('/files/paper/create', {
+    path: normalizePaperPath(docPath),
+    import_format: importFormat || 'markdown'
+  }, content);
+};
+
+/**
+ * Update an existing Paper document via /2/files/paper/update.
+ * Policy 'overwrite' (default) replaces the content. Policy 'update' appends;
+ * the API then requires the current paper_revision, which is only exposed in
+ * /files/export's Dropbox-API-Result header (not in /files/get_metadata).
+ *
+ * Returns { paper_revision }.
+ */
+DropboxClient.prototype.updatePaperDoc = function(docPath, content, importFormat, updatePolicy) {
+  var policy = updatePolicy || 'overwrite';
+  // Reject unknown policies loudly: a typo ("append", "Update") must not fall
+  // through to overwrite, which silently replaces the whole document.
+  if (policy !== 'update' && policy !== 'overwrite') {
+    throw new Error('Invalid policy "' + policy + '": use "update" (append) or "overwrite" (replace)');
+  }
+  // Same normalization as createPaperDoc — the API addresses docs by .paper path
+  docPath = normalizePaperPath(docPath);
+  var apiArg = {
+    path: docPath,
+    import_format: importFormat || 'markdown',
+    doc_update_policy: policy
+  };
+  if (policy === 'update') {
+    apiArg.paper_revision = this.getPaperRevision(docPath);
+  }
   try {
-    return this.uploadRequest('/files/upload', {
-      path: docPath,
-      mode: 'add',
-      autorename: true,
-      mute: false
-    }, actualContent);
+    return this.paperRequest('/files/paper/update', apiArg, content);
   } catch (err) {
-    if (err.data && err.data.error && err.data.error['.tag'] === 'invalid_file_extension') {
-      var parts = docPath.split('/');
-      var filename = parts[parts.length - 1];
-      var tempPath = '/' + filename;
-      var result = this.uploadRequest('/files/upload', {
-        path: tempPath,
-        mode: 'add',
-        autorename: true,
-        mute: false
-      }, actualContent);
-      var actualPath = result.path_display || tempPath;
-      if (actualPath !== docPath) {
-        var moveResult = this.request('/files/move_v2', {
-          from_path: actualPath,
-          to_path: docPath,
-          allow_shared_folder: true,
-          autorename: false
-        });
-        result.path_display = moveResult.metadata.path_display;
-      }
-      return result;
+    // safeGet can't address the '.tag' key (it splits its path on '.'), so
+    // read it directly.
+    var errTag = err.data && err.data.error ? err.data.error['.tag'] : null;
+    if (errTag === 'revision_mismatch' ||
+        (err.message && err.message.indexOf('revision_mismatch') !== -1)) {
+      // No automatic retry: an append is not idempotent — if the update landed
+      // but the response was lost, retrying would double-append.
+      err.message += ' (the doc changed between revision lookup and append; re-run to append against the new revision)';
     }
     throw err;
   }
 };
 
 /**
- * Update an existing Paper document
- * For 'update' policy (append), we need to provide the current paper_revision
- * 
- * When import_format is 'markdown', we auto-convert to HTML to work around
- * the Dropbox Paper API's limited markdown parser.
+ * Get the current paper_revision of a Paper doc from /files/export's
+ * Dropbox-API-Result header (export_metadata.paper_revision).
  */
-DropboxClient.prototype.updatePaperDoc = function(docPath, content, importFormat, updatePolicy) {
-  var actualContent = content;
-  var actualFormat = importFormat || 'markdown';
-  if (actualFormat === 'markdown') {
-    actualContent = markdownToDropboxHtml(content);
-    actualFormat = 'html';
+DropboxClient.prototype.getPaperRevision = function(docPath) {
+  var response = this.authenticatedRequest(this.contentUrl + '/files/export', {
+    method: 'POST',
+    headers: {
+      'Dropbox-API-Arg': httpHeaderSafeJson({ path: docPath, export_format: 'markdown' }),
+      'Content-Type': 'application/octet-stream'
+    },
+    timeout: this.timeout
+  });
+  if (!response.ok) {
+    // Surface the real export error (unsupported_file for a pre-1.8.0 plain
+    // upload, path/not_found, transport flake) instead of blaming the doc type.
+    var errText = response.text();
+    var errData;
+    try { errData = JSON.parse(errText); } catch (e) { errData = {}; }
+    throw new Error('Cannot read current revision of ' + docPath + ': ' +
+      (errData.error_summary || errText || ('export failed with status ' + response.status)));
+  }
+  var resultHeader = response.headers.get('dropbox-api-result');
+  var meta = null;
+  if (resultHeader) {
+    try { meta = JSON.parse(resultHeader); } catch (e) { meta = null; }
+  }
+  var revision = safeGet(meta, 'export_metadata.paper_revision', null);
+  if (revision === null || revision === undefined) {
+    throw new Error('Could not determine paper_revision for ' + docPath +
+      ' (export result header missing/unreadable — the doc may exceed the 10MB export buffer)');
+  }
+  return revision;
+};
+
+/**
+ * Content-upload-style request on the API domain (Dropbox-API-Arg header +
+ * octet-stream body). The Paper import endpoints live on api.dropboxapi.com —
+ * unlike /files/upload — which also avoids the proxy's unreliable _domain
+ * routing for content.dropboxapi.com (see downloadRequest).
+ * Body goes via a temp file (--data-binary) to preserve bytes exactly.
+ */
+DropboxClient.prototype.paperRequest = function(endpoint, apiArg, content) {
+  var os = require('os');
+  var tmpFile = path.join(os.tmpdir(), 'dropbox-paper-' + process.pid + '-' + Date.now() + '.body');
+  // 0600 + 'wx': not world-readable, and fail rather than follow a
+  // pre-planted symlink at the predictable name.
+  fs.writeFileSync(tmpFile, content, { mode: 384, flag: 'wx' });
+  var response;
+  try {
+    response = this.authenticatedRequest(this.apiUrl + endpoint, {
+      method: 'POST',
+      headers: {
+        'Dropbox-API-Arg': httpHeaderSafeJson(apiArg),
+        'Content-Type': 'application/octet-stream'
+      },
+      bodyFile: tmpFile,
+      timeout: this.timeout
+    });
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch (e) { /* ignore */ }
   }
 
-  // Use /files/upload on content.dropboxapi.com instead of the broken
-  // /files/paper/update on api.dropboxapi.com (which returns 500).
-  // mode:'overwrite' replaces the content; mode:'add' would create a new revision.
-  var mode = (updatePolicy === 'overwrite' || !updatePolicy) ? 'overwrite' : 'add';
-  return this.uploadRequest('/files/upload', {
-    path: docPath,
-    mode: mode,
-    autorename: false,
-    mute: false
-  }, actualContent);
+  var text = response.text();
+  var data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    data = { error: text };
+  }
+
+  if (!response.ok) {
+    var err = new Error(data.error_summary || safeGet(data, 'error.message', null) || text || 'Paper request failed');
+    err.status = response.status;
+    err.data = data;
+    throw err;
+  }
+
+  return data;
 };
 
 /**
@@ -856,7 +729,7 @@ function printHelp() {
   console.log('  -n, --limit <number>        Maximum results (default: 100)');
   console.log('  -p, --path <path>           Limit search to a specific path');
   console.log('  -e, --ext <extensions>      Filter by file extensions');
-  console.log('  -f, --format <format>       Export format: markdown or html');
+  console.log('  -f, --format <format>       read: export format (markdown|html); paper-create/update: import format (markdown|html|plain_text)');
   console.log('  -c, --content <text>        Document content (inline, single-line only)');
   console.log('  -i, --input <file>          Read content from a local file (recommended for multi-line)');
   console.log('  --stdin                     Read content from stdin (recommended for multi-line)');
@@ -935,7 +808,11 @@ function proxyFetch(tokenName, url, options) {
     cmd += ' -H ' + _shellQuote(k + ': ' + headers[k]);
   }
 
-  if (options.body) {
+  if (options.bodyFile) {
+    // --data-binary @file preserves the body byte-for-byte (curl -d strips
+    // newlines when reading from a file) — used for Paper content uploads.
+    cmd += ' --data-binary @' + _shellQuote(options.bodyFile);
+  } else if (options.body) {
     var bodyStr = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
     cmd += ' -d ' + _shellQuote(bodyStr);
   }
@@ -1133,9 +1010,9 @@ function main() {
         
         var createFormat = parsed.options.format || parsed.options.f || 'markdown';
         result = client.createPaperDoc(createPath, createContent, createFormat);
-        
+
         if (parsed.options.summary) {
-          console.log('Created: ' + (result.path_display || createPath));
+          console.log('Created: ' + (result.result_path || createPath) + (result.url ? ' (' + result.url + ')' : ''));
         } else {
           console.log(JSON.stringify(result));
         }
@@ -1183,7 +1060,7 @@ function main() {
         result = client.updatePaperDoc(updatePath, updateContent, updateFormat, updatePolicy);
         
         if (parsed.options.summary) {
-          console.log('Updated: ' + (result.path_display || updatePath));
+          console.log('Updated: ' + updatePath + (result.paper_revision !== undefined ? ' (revision ' + result.paper_revision + ')' : ''));
         } else {
           console.log(JSON.stringify(result));
         }
