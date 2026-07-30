@@ -749,7 +749,7 @@ function printHelp() {
   console.log('  -c, --content <text>        Document content (inline, single-line only)');
   console.log('  -i, --input <file>          Read content from a local file (recommended for multi-line)');
   console.log('  --stdin                     Read content from stdin (recommended for multi-line)');
-  console.log('  --policy <policy>           Update policy: update or overwrite');
+  console.log('  --policy <policy>           append (add to end) | prepend (add to start) | overwrite (replace all, default) | update (replace only if unchanged since read)');
   console.log('  -o, --output <file>         Save downloaded file to disk');
   console.log('');
   console.log('EXAMPLES:');
