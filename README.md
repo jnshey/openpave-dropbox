@@ -27,7 +27,16 @@ This is the house style for every Paper doc unless the user explicitly says othe
 
 **5. Tables: prefer `--format html` for table-heavy docs.** The markdown importer renders GFM tables as native Paper tables, but it can merge the block that directly follows a table (e.g. a list) into the table itself (verified live, 2026-07-30). HTML import (`<table>`, `<ol>`, `<p>`) renders each block cleanly. For markdown, put a heading or paragraph of text between a table and any list that follows.
 
-**6. Append vs replace.** `paper-update` accepts exactly two policies: `--policy update` (append) and `--policy overwrite` (replace, the default). Anything else is rejected — there is no `append` alias.
+**6. Choose the right update policy.** `paper-update --policy` accepts exactly four values (anything else is rejected):
+
+| Policy | Effect | Revision check |
+|--------|--------|----------------|
+| `append` | Add content to the **end** of the doc | no |
+| `prepend` | Add content to the **beginning** | no |
+| `overwrite` | **Replace all** content (the default!) | no |
+| `update` | **Replace all** content, but only if the doc hasn't changed since it was read | yes |
+
+To add content to an existing doc, use `--policy append`. Despite its name, `update` is a guarded *replace*, not an append (verified against the API, 2026-07-30). Omitting `--policy` replaces the whole document.
 
 ### Paper Document Creation - Multi-line Content Issue
 
@@ -265,6 +274,10 @@ pave run dropbox download "/path/broken.paper" --output /tmp/old-content.html
 # clean up the content, then:
 pave run dropbox paper-create "/path/doc.paper" --input /tmp/content.md --summary
 ```
+
+### `invalid_path` when creating in a shared folder
+
+Some shared-folder locations reject Paper doc creation with `invalid_path`. Create the doc in your own space and move it with the Dropbox UI, or ask the folder owner to create it.
 
 ### Permission Errors
 

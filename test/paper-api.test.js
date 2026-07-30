@@ -155,26 +155,49 @@ describe('#3 paper-update uses /files/paper/update', () => {
     assert.equal(requests[0].body.toString('utf8'), 'new body');
   });
 
-  it('--policy update discovers paper_revision via /files/export then appends with it', async () => {
+  it('--policy append sends doc_update_policy append with NO revision round-trip', async () => {
+    responders['/2/files/paper/update'] = () => ({ ok: true, status: 200, headers: {}, body: JSON.stringify({ paper_revision: 44 }) });
+    await runSkill(['paper-update', '/Doc.paper', '--content', 'appended tail', '--policy', 'append']);
+    assert.equal(requests.length, 1, 'append needs no export/revision discovery');
+    const arg = apiArgOf(requests[0]);
+    assert.equal(arg.doc_update_policy, 'append');
+    assert.equal(arg.paper_revision, undefined);
+    assert.equal(requests[0].body.toString('utf8'), 'appended tail');
+  });
+
+  it('--policy prepend sends doc_update_policy prepend with NO revision round-trip', async () => {
+    responders['/2/files/paper/update'] = () => ({ ok: true, status: 200, headers: {}, body: JSON.stringify({ paper_revision: 45 }) });
+    await runSkill(['paper-update', '/Doc.paper', '--content', 'lead-in', '--policy', 'prepend']);
+    assert.equal(requests.length, 1);
+    assert.equal(apiArgOf(requests[0]).doc_update_policy, 'prepend');
+  });
+
+  it('--policy update (guarded REPLACE) discovers paper_revision via /files/export first', async () => {
     responders['/2/files/export'] = () => ({
       ok: true, status: 200,
       headers: { 'dropbox-api-result': JSON.stringify({ export_metadata: { paper_revision: 41, name: 'Doc.markdown' } }) },
       body: 'existing content',
     });
     responders['/2/files/paper/update'] = () => ({ ok: true, status: 200, headers: {}, body: JSON.stringify({ paper_revision: 44 }) });
-    await runSkill(['paper-update', '/Doc.paper', '--content', 'appended tail', '--policy', 'update']);
+    await runSkill(['paper-update', '/Doc.paper', '--content', 'replacement body', '--policy', 'update']);
     assert.equal(requests.length, 2, 'export (revision discovery) then update');
     assert.match(requests[0].url, /\/2\/files\/export/);
     const arg = apiArgOf(requests[1]);
     assert.equal(arg.doc_update_policy, 'update');
     assert.equal(arg.paper_revision, 41);
-    assert.equal(requests[1].body.toString('utf8'), 'appended tail');
+    assert.equal(requests[1].body.toString('utf8'), 'replacement body');
   });
 
   it('rejects an unrecognized --policy without touching the API (silent-overwrite guard)', async () => {
     responders['/2/files/paper/update'] = () => ({ ok: true, status: 200, headers: {}, body: JSON.stringify({ paper_revision: 1 }) });
-    await expectFailure(['paper-update', '/Doc.paper', '--content', 'x', '--policy', 'append'], /Invalid policy .{0,2}append.{0,2}: use .{0,2}update.{0,2} \(append\) or .{0,2}overwrite/);
+    await expectFailure(['paper-update', '/Doc.paper', '--content', 'x', '--policy', 'replace'], /Invalid policy .{0,2}replace.{0,2}: use .{0,2}append/);
     assert.equal(requests.length, 0, 'a typo policy must never reach Dropbox');
+  });
+
+  it('--summary reports the normalized path, not the raw positional', async () => {
+    responders['/2/files/paper/update'] = () => ({ ok: true, status: 200, headers: {}, body: JSON.stringify({ paper_revision: 9 }) });
+    const out = await runSkill(['paper-update', '/NoExt', '--content', 'x', '--policy', 'append', '--summary']);
+    assert.match(out, /Updated: \/NoExt\.paper/);
   });
 
   it('appends .paper to the update path too (symmetry with create)', async () => {

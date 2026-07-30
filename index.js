@@ -449,18 +449,25 @@ DropboxClient.prototype.createPaperDoc = function(docPath, content, importFormat
 
 /**
  * Update an existing Paper document via /2/files/paper/update.
- * Policy 'overwrite' (default) replaces the content. Policy 'update' appends;
- * the API then requires the current paper_revision, which is only exposed in
- * /files/export's Dropbox-API-Result header (not in /files/get_metadata).
+ * doc_update_policy semantics (files.stone PaperDocUpdatePolicy, verified
+ * live 2026-07-30):
+ *   append    — add to the END of the doc (no revision check)
+ *   prepend   — add to the BEGINNING (no revision check)
+ *   overwrite — replace all content unconditionally (default)
+ *   update    — REPLACE all content only if paper_revision matches the
+ *               latest revision (NOT an append!); the revision is discovered
+ *               from /files/export's Dropbox-API-Result header, the only
+ *               place the API exposes it.
  *
- * Returns { paper_revision }.
+ * Returns { paper_revision, result_path }.
  */
 DropboxClient.prototype.updatePaperDoc = function(docPath, content, importFormat, updatePolicy) {
   var policy = updatePolicy || 'overwrite';
-  // Reject unknown policies loudly: a typo ("append", "Update") must not fall
-  // through to overwrite, which silently replaces the whole document.
-  if (policy !== 'update' && policy !== 'overwrite') {
-    throw new Error('Invalid policy "' + policy + '": use "update" (append) or "overwrite" (replace)');
+  // Reject unknown policies loudly: a typo must not fall through to
+  // overwrite, which silently replaces the whole document.
+  if (policy !== 'append' && policy !== 'prepend' && policy !== 'update' && policy !== 'overwrite') {
+    throw new Error('Invalid policy "' + policy + '": use "append" (add to end), "prepend" (add to start), ' +
+      '"overwrite" (replace all, default), or "update" (replace only if unchanged since read)');
   }
   // Same normalization as createPaperDoc — the API addresses docs by .paper path
   docPath = normalizePaperPath(docPath);
@@ -472,20 +479,23 @@ DropboxClient.prototype.updatePaperDoc = function(docPath, content, importFormat
   if (policy === 'update') {
     apiArg.paper_revision = this.getPaperRevision(docPath);
   }
+  var result;
   try {
-    return this.paperRequest('/files/paper/update', apiArg, content);
+    result = this.paperRequest('/files/paper/update', apiArg, content);
   } catch (err) {
     // safeGet can't address the '.tag' key (it splits its path on '.'), so
     // read it directly.
     var errTag = err.data && err.data.error ? err.data.error['.tag'] : null;
     if (errTag === 'revision_mismatch' ||
         (err.message && err.message.indexOf('revision_mismatch') !== -1)) {
-      // No automatic retry: an append is not idempotent — if the update landed
-      // but the response was lost, retrying would double-append.
-      err.message += ' (the doc changed between revision lookup and append; re-run to append against the new revision)';
+      err.message += ' (the doc changed after the revision was read; re-read and retry if the replacement is still wanted)';
     }
     throw err;
   }
+  // The API returns only { paper_revision }; echo the normalized path so the
+  // CLI reports what was actually written (e.g. after .paper was appended).
+  result.result_path = docPath;
+  return result;
 };
 
 /**
@@ -517,8 +527,14 @@ DropboxClient.prototype.getPaperRevision = function(docPath) {
   }
   var revision = safeGet(meta, 'export_metadata.paper_revision', null);
   if (revision === null || revision === undefined) {
+    // Distinguishable causes: >10MB export truncation, a proxy transport
+    // hiccup (synthetic ok:true envelope), or an unexpected header shape.
+    // Include a body snippet so the caller can tell which.
+    var bodyPeek = '';
+    try { bodyPeek = String(response.text()).slice(0, 200); } catch (e) { /* ignore */ }
     throw new Error('Could not determine paper_revision for ' + docPath +
-      ' (export result header missing/unreadable — the doc may exceed the 10MB export buffer)');
+      ' (export result header missing/unreadable — proxy transport issue or >10MB export). ' +
+      (bodyPeek ? 'Response begins: ' + bodyPeek : 'Empty response body.'));
   }
   return revision;
 };
@@ -1060,7 +1076,7 @@ function main() {
         result = client.updatePaperDoc(updatePath, updateContent, updateFormat, updatePolicy);
         
         if (parsed.options.summary) {
-          console.log('Updated: ' + updatePath + (result.paper_revision !== undefined ? ' (revision ' + result.paper_revision + ')' : ''));
+          console.log('Updated: ' + (result.result_path || updatePath) + (result.paper_revision !== undefined ? ' (revision ' + result.paper_revision + ')' : ''));
         } else {
           console.log(JSON.stringify(result));
         }

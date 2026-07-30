@@ -133,12 +133,14 @@ commands:
       - --summary
     usage_warning: "CRITICAL: Use --input for multi-line content. --content truncates at first newline!"
     examples:
-      - 'paper-update "/CnR HR/Doc.paper" --input /tmp/updated.md --policy update'
-      - 'paper-update "/path/doc.paper" --content "Single line update"'
+      - 'paper-update "/CnR HR/Doc.paper" --input /tmp/new-section.md --policy append'
+      - 'paper-update "/path/doc.paper" --content "Replaces everything" --policy overwrite'
     policies:
-      - "update: Append to existing content"
-      - "overwrite: Replace all content (default)"
-      - "Only these two values are accepted; anything else is rejected (no silent overwrite)"
+      - "append: Add content to the END of the doc (use this to add content)"
+      - "prepend: Add content to the BEGINNING of the doc"
+      - "overwrite: REPLACE ALL content (default)"
+      - "update: REPLACE ALL content only if the doc is unchanged since read (guarded replace, NOT an append)"
+      - "Only these four values are accepted; anything else is rejected (no silent overwrite)"
 
   - name: info
     description: Get file or folder metadata
