@@ -21,9 +21,22 @@ These rules apply to **every** Paper document you create or update. They are not
 
 This is the house style for every Paper doc unless the user explicitly says otherwise.
 
-**3. Read before you update.** Before calling `paper-update`, fetch the current doc with `paper-read` and match its existing heading hierarchy. Don't blow away structure the user established.
+**3. Read before you update.** Before calling `paper-update`, fetch the current doc with `read` and match its existing heading hierarchy. Don't blow away structure the user established.
 
-**4. Spacing between subsections.** Markdown blank lines get collapsed by Paper's renderer. To create visual separation between subsections, put `&nbsp;` on its own line between them.
+**4. Blank lines don't create visual gaps.** Paper's markdown importer collapses blank-line paragraph separation — consecutive paragraphs render on adjacent lines. Rely on headings for structure rather than empty lines.
+
+**5. Tables: prefer `--format html` for table-heavy docs.** The markdown importer renders GFM tables as native Paper tables, but it can merge the block that directly follows a table (e.g. a list) into the table itself (verified live, 2026-07-30). HTML import (`<table>`, `<ol>`, `<p>`) renders each block cleanly. For markdown, put a heading or paragraph of text between a table and any list that follows.
+
+**6. Choose the right update policy.** `paper-update --policy` accepts exactly four values (anything else is rejected):
+
+| Policy | Effect | Revision check |
+|--------|--------|----------------|
+| `append` | Add content to the **end** of the doc | no |
+| `prepend` | Add content to the **beginning** | no |
+| `overwrite` | **Replace all** content (the default!) | no |
+| `update` | **Replace all** content, but only if the doc hasn't changed since it was read | yes |
+
+To add content to an existing doc, use `--policy append`. Despite its name, `update` is a guarded *replace*, not an append (verified against the API, 2026-07-30). Omitting `--policy` replaces the whole document.
 
 ### Paper Document Creation - Multi-line Content Issue
 
@@ -247,6 +260,24 @@ Content with newlines..."
 # First: write content to file
 # Then: pave run dropbox paper-create "/path/doc.paper" --input /tmp/content.md
 ```
+
+### "This file type is unsupported here" / `path/not_found` on paper-update
+
+**Symptoms:** A `.paper` file exists but dropbox.com refuses to open it ("Can't load this file type"), `read` fails with `non_exportable/`, or `paper-update` returns `path/not_found/` even though the file is visible.
+
+**Cause:** The doc was created by skill versions before 1.8.0, which uploaded raw bytes to a `.paper` path instead of importing through the Paper API. Such files are ordinary blobs, not Paper documents, and the Paper endpoints won't touch them.
+
+**Solution:** Recreate the doc. Recover the old content with `download` (blobs are still downloadable), then `paper-create` it again — the result is a real Paper doc:
+
+```bash
+pave run dropbox download "/path/broken.paper" --output /tmp/old-content.html
+# clean up the content, then:
+pave run dropbox paper-create "/path/doc.paper" --input /tmp/content.md --summary
+```
+
+### `invalid_path` when creating in a shared folder
+
+Some shared-folder locations reject Paper doc creation with `invalid_path`. Create the doc in your own space and move it with the Dropbox UI, or ask the folder owner to create it.
 
 ### Permission Errors
 
