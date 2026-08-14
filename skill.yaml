@@ -205,6 +205,11 @@ tokens:
     config:
       env: DROPBOX_TOKEN
       type: oauth
+      # Upstream base for the auth-proxy's path-style forwarding
+      # (/proxy/dropbox/<path> → baseUrl + <path>). Without this the sandbox
+      # proxy has no upstream to forward to and every call fails; content.*
+      # endpoints override the host per-request via the _domain param.
+      baseUrl: https://api.dropboxapi.com
       domains:
         - api.dropboxapi.com
         - content.dropboxapi.com
