@@ -433,11 +433,18 @@ DropboxClient.prototype.searchPaperDocs = function(query, options) {
  * The Paper API requires paths ending in lowercase ".paper" — uppercase
  * variants get invalid_file_extension (verified live). Append or lowercase
  * the extension as needed.
+ *
+ * Dropbox paths must also be ABSOLUTE. A relative path like "China" (no leading
+ * slash, e.g. when the agent invents a bare document name) makes the Paper API
+ * return an HTTP 502 on the malformed path rather than a clean error, so force
+ * a leading "/" before touching the extension.
  */
 function normalizePaperPath(docPath) {
-  if (/\.paper$/.test(docPath)) return docPath;
-  if (/\.paper$/i.test(docPath)) return docPath.replace(/\.paper$/i, '.paper');
-  return docPath + '.paper';
+  var p = docPath || '';
+  if (p.charAt(0) !== '/') p = '/' + p;
+  if (/\.paper$/.test(p)) return p;
+  if (/\.paper$/i.test(p)) return p.replace(/\.paper$/i, '.paper');
+  return p + '.paper';
 }
 
 DropboxClient.prototype.createPaperDoc = function(docPath, content, importFormat) {
