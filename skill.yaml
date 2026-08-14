@@ -2,7 +2,7 @@
 # Access Dropbox files, folders, and Paper documents with secure token handling
 
 name: dropbox
-version: 1.8.0
+version: 2.0.0
 description: Access Dropbox files, folders, and Paper documents. Use --input for multi-line content in Paper docs.
 category: productivity
 
@@ -192,11 +192,14 @@ tokens:
     env:
       required:
         - DROPBOX_REFRESH_TOKEN
-        - DROPBOX_APP_KEY
-        - DROPBOX_APP_SECRET
-    # OAuth authorization flow configuration (for web UI authentication)
+      optional:
+        - DROPBOX_TOKEN
+    # Brokered OAuth (openpave #1662): CNR owns the shared Dropbox app and holds
+    # its client_secret server-side. Users click Connect and authorize — no
+    # client_id/secret ever on the device; refresh routes through the CNR broker.
     oauth:
       provider: dropbox
+      broker: true
       authorizeUrl: https://www.dropbox.com/oauth2/authorize
       # Dropbox doesn't use scopes - permissions are set at app level
     config:
@@ -210,9 +213,11 @@ tokens:
         name: Authorization
         format: "Bearer {token}"
       refreshEnv: DROPBOX_REFRESH_TOKEN
-      refreshUrl: https://api.dropboxapi.com/oauth2/token
-      clientIdEnv: DROPBOX_APP_KEY
-      clientSecretEnv: DROPBOX_APP_SECRET
+      # Brokered: no clientIdEnv/clientSecretEnv/refreshUrl — the broker exchanges
+      # and refreshes with the server-side secret. broker/provider let openpave
+      # route the flow (and, since #1665, auto-provision this config on install).
+      broker: true
+      provider: dropbox
 
 # Sandbox permissions
 permissions:
